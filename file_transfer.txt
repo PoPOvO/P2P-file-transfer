@@ -1,0 +1,155 @@
+5传输文件即传输字节流，即byte
+
+使用DataInputStream/DataOutputStream和BufferedInputStream/BuferedOutputStream都能发送字节流
+但使用DOS/DIS既可以发送字符流，也可以发送字节流
+————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+注意:
+	使用BIS或者DIS接收时，要小心接收的内容的字节数不一定是想接收的内容的长度，即bufferSize，要根据实际接收到的字节数检测。即发送方发送次数不一定等于
+接收方接收次数。
+
+	1、在发送文件前，要先附加数据头，用以描述数据。注意不要轻易flush()，发送一小点，flush()一次，发送中可能会造成数据的丢失(未知原因，排错中发现)。
+
+  **2、对于较小的数据头，如数据头长度信息，一般为1个字节。在bos.write()后，最好让线程休眠一下，否则会产生数据的错乱(未知详细原因，排错中发现)。
+
+	3、对于FileReceive()方法，不要对整个方法加锁，即synchronized。这样多个接收线程在接收时，会使得线程排队，会造成耗时。但对于FileReceive()方法中多个
+接受线程共同使用的变量，要对其加锁。
+
+	4、对于处理每个发送者进度条的方法，要对其加锁。因为多个接受线程接收文件时要向Window抛文件接收信息，同时请求Swing的EventDispatcherThread
+刷新进度条，会使得进度条的刷新过程混乱。
+
+	5、对于文件的合并条件是：remainAllFileLen == 0
+	当该条件满足后，应该立即修改该变量的值，防止其他接受线程满足该条件多次合并。即，只允许一个接受线程满足该条件并合并。
+	
+	6、LinkedList并非线程安全的，所以对LinkedList的元素更改的地方需要互斥进行。
+	
+	7、对于发送者，当发送完文件数据后不要立马终止线程。使线程休眠一段时间再终止，保证接收方不因为网络原因而产生“Connect Reset”错误。
+	
+	8、因为sort()函数使用for each循环遍历并排序，因此使用同步容器包装List后，依然无法保证for each的准确性,因为排序的过程可能另一个线程修改该列表
+	
+————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+对于datagram为JSON形式
+
+————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+真正服务器:RS(Real Server);	真正客户端:RC(Real Client);	临时接收服务器:TRS(Temp Receive Server);临时发送客户端:TSC(Temp Send Client)
+
+首先，RS-RC和TRS-TSC应该是独立的两个模块。这里的RS-RC主要是视频播放系统的C-S。而TRS-TSC只负责文件的单向传输。
+
+1、RS应该具有所有文件的列表和可发送者信息：
+	其形式如：Map<fileName, List<FileHolder>> allFileHolderMap; 
+
+	1.1该列表维护的并非文件持有者实时的信息，而是可能曾经持有文件的RC信息，因为持有文件的RC可能在接收到文件后删除文件。
+	而每当RC接收完一个或者一批文件，就向RS发送一次所接收的文件信息，RS根据这些信息更新该列表。
+
+	1.2FileHolder是一个Model，应该包括一个文件持有者的所有信息。
+	其字段如: 
+	{
+		String clinentId;
+		int sendCount; //发送次数
+	}
+
+2、RS应具有一个所有可发送客户端的列表：
+	Map<clientId, sendable>，对于不可发送的客户端，服务器应通过配置文件的方式标记。一旦一个RC上线，就将该RC的Ip和配置文件的IP比对，若含有该Ip，则表明该客户端不支持发送。
+
+3、当只有一个RC上线或多个RC上线，但只有RS存在文件资源时，只由RS发送
+
+4、RS向单RC发送文件的一次过程：
+tempList:"上线&持有文件"的RC列表;
+sendableList："上线&持有文件&senCount满足条件&空闲"的RC列表
+
+RS启动后，随之RC上线，RC缺失一些必要的文件运行客户端的某些功能(如视频播放需要的dll文件)，这个发现文件缺失的过程应该是一次version的比较。
+对于RS和RC都应该具有自己的版本号。当一个RC上线后，RC直接发送将自己的version发送到RS，RS比对后返回一条信息，用于指示RC的动作。
+
+这种动作包含两种情况：
+	(1)、版本相同，什么也不干
+
+	(2)、版本不同，RS发送的消息不仅填充Action还有Message，RC解析Action后发现需要接收文件，在ReceiverCenter中解析Message并开启TRS，
+	并要向RS发送一条准备接受的消息。RS接收到该消息后再开启TSC或者分派文件。(TRS必须先开启，所以RS不能在发送完version比对信息后直接开启TSC)
+当RC的文件接收完毕后，向RS发送一条信息，该信息必须包含所接受的文件信息，如文件名+clientIp。
+
+5、多RC(可包含RS)向单RC发送文件的一次过程:
+	当一个RC启动后，发送version到RS，RS比对后发现version不同，需要发送一定的文件。此时，RS需要在allFileHolderMap中找到持有该文件的所有RC。
+然后一个一个在上线的RC的Map里找。找到这些持有这个文件并且上线的RC并放入一个tempList里。RS找到该tempList中sendCount最小的3个并向它们发送
+一个问询信息，该问询信息应包含该文件名。( “3个”由配置文件决定，当tempList元素小于3个时直接发送问询消息)。RC接收到该信息并检测本机是否仍存在该文件，
+并检测自己的状态。(暂定状态为：空闲态、忙碌态)然后RC将是否存在该文件和自己状态的信息回送给RS。RS接收到该消息后：
+	(1)文件存在且为空闲态：RS将该RC放入sendableList，并在tempList中删除该RC。
+	(2)文件不存在：RS在allFileHolderMap、tempList中删除该RC。
+	(3)文件存在，但为忙碌：RS在tempList里删除该RC(就当该RC文件不存在，方便找sendCount最小的)，并在tempList找到sendCount最小的重复该问询操作，
+直到tempList为空或者sendableList.size() == 3。
+
+//暂未实现状态和问询
+//不实现问询，复杂度太大，而采用客户端定期向服务器汇报自己的文件持有信息。
+
+当(tempList.size() == 0 || sendableList.size() == 3)后，RS都需要根据sendableList()中的RC分配待发送文件的分配信息。
+————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+假设有20文件待发送，分别为File0~19
+
+对于文件File0，RS问询后在sendableList里存放有2个发送端。 {A, B, C}
+对于文件File1，RS问询后在sendableList里存放有3个发送端。 {A, C, D}
+对于文件File2，RS问询后在sendableList里存放有3个发送端。 {B, E, F}
+对于文件File3，RS问询后在sendableList里存放有3个发送端。 {E, F,G}
+对于文件File4，RS问询后在sendableList里存放有3个发送端。 {H}
+……
+
+最后形成: sendableMap = Map<clientId, List<FileInfo>>的形式。
+
+FIleInfo = {
+	fileName,
+	fileLen
+}
+
+假如该Map的元素为8个。
+
+Map = {
+	A: {File0, File1},
+	B: {File0 ~ File10},
+	C: {File0 ~ File10},
+	D: {File0 ~ File10},
+	E: {File11~16},
+	F: {File14~18}
+	……
+}
+
+但是RS配置的发送端最多个数为3个。所以RS需要挑选出“权值最大(总个数)&文件重复率最低”的3个客户端。
+
+SenderResultMap = {
+	B: {File0 ~ File10},
+	E: {File11~16},
+	F: {File14~18}
+}
+
+当挑选出最优的3个RC后，产生3个List，形式如List<DatagramString>
+
+SenderDatagramList = [ 
+	"bin/resource/video1.mp4:10000000:0",
+	……
+]
+
+服务器将Map转化为：
+
+FileResultMap = {
+	File0: {B},
+	File1: {B},
+	……
+	File10: {B, E},
+	File11: {E},
+	……
+	File18: {F}
+}
+
+RS遍历FileResultMap并进行分配：
+1.对于List<Sender>的size == 1或者File.length < 100M的文件，直接填充到SenderDatagramList并形成字符串。
+2.对于File.length > 100M并且List<Sender>.size() >= 2，再对文件进行分片，并填充到对应的SenderDatagramList。
+
+
+
+总结：分片的目的是为了断点传输以分片文件为单元。
+
+
+
+
+
+
+

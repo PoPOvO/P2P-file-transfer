@@ -1,0 +1,29 @@
+			int metaDataLen = 8;
+			byte[] fileLenBytes = new byte[8];
+			while (metaDataLen > 0) {
+				actualByteCount = bis.read(fileLenBytes, actualByteCount, fileLenBytes.length - actualByteCount);
+				metaDataLen -= actualByteCount;
+			}
+			fileLen = DataTransform.bytesToLong(fileLenBytes);
+			
+			actualByteCount = 0;
+			byte[] fileOffsetBytes = new byte[8];
+			while (metaDataLen > 0) {
+				actualByteCount = bis.read(fileOffsetBytes, actualByteCount, fileOffsetBytes.length - actualByteCount);
+				metaDataLen -= actualByteCount;
+			}
+			fileOffset = DataTransform.bytesToLong(fileOffsetBytes);
+			
+			actualByteCount = 0;
+			metaDataLen = Integer.valueOf(PropertiesReader.getProperty("sendfileNameLen"));
+			byte[] fileNameBytes = new byte[Integer.valueOf(PropertiesReader.getProperty("sendfileNameLen"))];
+			while (metaDataLen > 0) {
+				actualByteCount = bis.read(fileNameBytes, actualByteCount, fileNameBytes.length - actualByteCount);
+				metaDataLen -= actualByteCount;
+			}
+			fileName = new String(fileNameBytes).trim();
+			System.err.println(Arrays.toString(fileLenBytes) + Arrays.toString(fileOffsetBytes) + Arrays.toString(fileNameBytes));
+			System.err.println("[接收文件总长度:" + fileLen + "|接收文件名:" + fileName + "|接收文件偏移量:" + fileOffset + "]");
+			if (debug) {
+				System.err.println("[接收文件总长度:" + fileLen + "|接收文件名:" + fileName + "|接收文件偏移量:" + fileOffset + "]");
+			}
